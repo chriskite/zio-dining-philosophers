@@ -1,10 +1,10 @@
 import zio.console.putStrLn
 import zio.duration._
-import zio.{RefM, Semaphore, ZIO}
+import zio.{Ref, Semaphore, ZIO}
 
-case class Chopstick(id: Long, sem: Semaphore, philosopherId: RefM[Option[Long]])
+case class Chopstick(id: Long, sem: Semaphore, philosopherId: Ref[Option[Long]])
 
-class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick) {
+class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick, timesAte: Ref[Long]) {
   import Philosopher._
 
   private def withChopstick[R, E, A](chopstick: Chopstick)(f: => ZIO[R, E, A]) =
@@ -24,15 +24,22 @@ class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick)
         case _    => ZIO.unit
       }
 
+  private def withChopsticks[R, E, A](chopsticks: (Chopstick, Chopstick))(f: => ZIO[R, E, A]) = {
+    if (0 == id % 2) {
+      withChopstick(chopsticks._1)(withChopstick(chopsticks._2)(f))
+    } else {
+      withChopstick(chopsticks._2)(withChopstick(chopsticks._1)(f))
+    }
+  }
+
   private def eat = {
-    withChopstick(leftChopstick) {
-      withChopstick(rightChopstick) {
-        for {
-          _ <- putStrLn(s"Philosopher $id eating")
-          _ <- ZIO.sleep(EatTime)
-          _ <- putStrLn(s"Philosopher $id finished eating")
-        } yield ()
-      }
+    withChopsticks(leftChopstick, rightChopstick) {
+      for {
+        _ <- putStrLn(s"Philosopher $id eating")
+        _ <- ZIO.sleep(EatTime)
+        _ <- timesAte.update(_ + 1)
+        _ <- putStrLn(s"Philosopher $id finished eating")
+      } yield ()
     }
   }
 
@@ -43,7 +50,13 @@ class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick)
       _ <- putStrLn(s"Philosopher $id finished thinking")
     } yield ()
 
-  def dine = (eat *> think).forever
+  def dine =
+    (eat *> think).forever.onInterrupt {
+      for {
+        ate <- timesAte.get
+        _   <- putStrLn(s"Philosopher $id ate $ate times")
+      } yield ()
+    }
 }
 
 object Philosopher {
@@ -56,8 +69,8 @@ object DiningPhilosophers extends zio.App {
   def simulation(numPhilosophers: Int) =
     for {
       philosophers <- makePhilosophers(numPhilosophers)
-      fibers       <- ZIO.traverse(philosophers)(_.dine.fork)
-      _            <- ZIO.traverse(fibers)(_.join)
+      fiber        <- ZIO.forkAll(philosophers.map(_.dine))
+      _            <- fiber.join
     } yield ()
 
   def makePhilosophers(numPhilosophers: Int) = {
@@ -69,7 +82,7 @@ object DiningPhilosophers extends zio.App {
         chopsticks <- ZIO.traverse(0 to numPhilosophers - 1) { i =>
           for {
             sem              <- Semaphore.make(1)
-            philosopherIdRef <- RefM.make[Option[Long]](None)
+            philosopherIdRef <- Ref.make[Option[Long]](None)
           } yield Chopstick(i, sem, philosopherIdRef)
         }
         philosophers <- ZIO.sequence {
@@ -83,7 +96,8 @@ object DiningPhilosophers extends zio.App {
             case (stickList, index) =>
               for {
                 stickTuple <- ZIO.fromOption(stickList.headOption zip stickList.lastOption)
-              } yield new Philosopher(index, stickTuple._1, stickTuple._2)
+                timesAte   <- Ref.make[Long](0)
+              } yield new Philosopher(index, stickTuple._1, stickTuple._2, timesAte)
           }
         }
       } yield philosophers
