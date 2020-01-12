@@ -19,6 +19,10 @@ class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick)
         } yield r
       }
       .timeout(WaitTimeout)
+      .tap {
+        case None => putStrLn(s"Philosopher $id gave up waiting for chopstick ${chopstick.id}")
+        case _    => ZIO.unit
+      }
 
   private def eat = {
     withChopstick(leftChopstick) {
@@ -43,9 +47,9 @@ class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick)
 }
 
 object Philosopher {
-  val WaitTimeout = 3.seconds
   val EatTime     = 2.seconds
   val ThinkTime   = 3.seconds
+  val WaitTimeout = EatTime * 2
 }
 
 object DiningPhilosophers extends zio.App {
@@ -57,21 +61,28 @@ object DiningPhilosophers extends zio.App {
     } yield ()
 
   def makePhilosophers(numPhilosophers: Int) = {
+    def circularIterator[A](s: Seq[A]) = Iterator.continually(s).flatten
     if (numPhilosophers <= 0) {
       ZIO.dieMessage("numPhilosophers must be > 0")
     } else {
       for {
-        chopsticks <- ZIO.traverse(1 to numPhilosophers + 1) { i =>
+        chopsticks <- ZIO.traverse(0 to numPhilosophers - 1) { i =>
           for {
             sem              <- Semaphore.make(1)
             philosopherIdRef <- RefM.make[Option[Long]](None)
           } yield Chopstick(i, sem, philosopherIdRef)
         }
         philosophers <- ZIO.sequence {
-          chopsticks.sliding(2).toList.zipWithIndex.map {
+
+          /**
+            * Set out a chopstick on both sides of each philosopher seated around a circular table.
+            * Since the table is round, the first philosopher's left chopstick is the last philosopher's
+            * right chopstick.
+            */
+          circularIterator(chopsticks).take(numPhilosophers + 1).sliding(2).toList.zipWithIndex.map {
             case (stickList, index) =>
               for {
-                stickTuple <- ZIO.fromOption(stickList.headOption.zip(stickList.lastOption))
+                stickTuple <- ZIO.fromOption(stickList.headOption zip stickList.lastOption)
               } yield new Philosopher(index, stickTuple._1, stickTuple._2)
           }
         }
