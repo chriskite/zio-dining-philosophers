@@ -3,49 +3,60 @@ import zio.duration._
 import zio.{RefM, Semaphore, ZIO}
 
 case class Chopstick(id: Long, sem: Semaphore, philosopherId: RefM[Option[Long]])
-case class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick)
 
-class DiningRoom(philosophers: Seq[Philosopher]) {
-  def philosopherTask(philosopher: Philosopher) = {
-    def loop = {
-      philosopher.leftChopstick.sem
-        .withPermit {
-          for {
-            _ <- philosopher.leftChopstick.philosopherId.set(Some(philosopher.id))
-            _ <- putStrLn(s"Philosopher ${philosopher.id} picked up left stick")
-            _ <- philosopher.rightChopstick.sem
-              .withPermit {
-                for {
-                  _ <- philosopher.rightChopstick.philosopherId.set(Some(philosopher.id))
-                  _ <- putStrLn(s"Philosopher ${philosopher.id} picked up right stick")
-                  _ <- putStrLn(s"Philosopher ${philosopher.id} eating")
-                  _ <- ZIO.sleep(2.seconds)
-                  _ <- putStrLn(s"Philosopher ${philosopher.id} finished eating")
-                  _ <- philosopher.rightChopstick.philosopherId.set(None)
-                  _ <- putStrLn(s"Philosopher ${philosopher.id} put down right stick")
-                } yield ()
-              }
-              .timeout(3.seconds)
-            _ <- philosopher.leftChopstick.philosopherId.set(None)
-            _ <- putStrLn(s"Philosopher ${philosopher.id} put down left stick")
-            _ <- putStrLn(s"Philosopher ${philosopher.id} thinking")
-            _ <- ZIO.sleep(3.seconds)
-          } yield ()
-        }
-        .timeout(3.seconds)
+class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick) {
+  import Philosopher._
+
+  private def withChopstick[R, E, A](chopstick: Chopstick)(f: => ZIO[R, E, A]) =
+    chopstick.sem
+      .withPermit {
+        for {
+          _ <- putStrLn(s"Philosopher $id picked up chopstick ${chopstick.id}")
+          _ <- chopstick.philosopherId.set(Some(id))
+          r <- f
+          _ <- chopstick.philosopherId.set(None)
+          _ <- putStrLn(s"Philosopher $id put down chopstick ${chopstick.id}")
+        } yield r
+      }
+      .timeout(WaitTimeout)
+
+  private def eat = {
+    withChopstick(leftChopstick) {
+      withChopstick(rightChopstick) {
+        for {
+          _ <- putStrLn(s"Philosopher $id eating")
+          _ <- ZIO.sleep(EatTime)
+          _ <- putStrLn(s"Philosopher $id finished eating")
+        } yield ()
+      }
     }
-    loop.forever
   }
 
-  def simulation =
+  private def think =
     for {
-      fibers <- ZIO.traverse(philosophers)(philosopherTask(_).fork)
-      _      <- ZIO.traverse(fibers)(_.join)
+      _ <- putStrLn(s"Philosopher $id thinking")
+      _ <- ZIO.sleep(ThinkTime)
+      _ <- putStrLn(s"Philosopher $id finished thinking")
     } yield ()
+
+  def dine = (eat *> think).forever
 }
 
-object DiningRoom {
-  def apply(numPhilosophers: Int) = {
+object Philosopher {
+  val WaitTimeout = 3.seconds
+  val EatTime     = 2.seconds
+  val ThinkTime   = 3.seconds
+}
+
+object DiningPhilosophers extends zio.App {
+  def simulation(numPhilosophers: Int) =
+    for {
+      philosophers <- makePhilosophers(numPhilosophers)
+      fibers       <- ZIO.traverse(philosophers)(_.dine.fork)
+      _            <- ZIO.traverse(fibers)(_.join)
+    } yield ()
+
+  def makePhilosophers(numPhilosophers: Int) = {
     if (numPhilosophers <= 0) {
       ZIO.dieMessage("numPhilosophers must be > 0")
     } else {
@@ -61,21 +72,14 @@ object DiningRoom {
             case (stickList, index) =>
               for {
                 stickTuple <- ZIO.fromOption(stickList.headOption.zip(stickList.lastOption))
-              } yield Philosopher(index, stickTuple._1, stickTuple._2)
+              } yield new Philosopher(index, stickTuple._1, stickTuple._2)
           }
         }
-      } yield new DiningRoom(philosophers)
+      } yield philosophers
     }
   }
-}
 
-object DiningPhilosophers extends zio.App {
   def run(args: List[String]): ZIO[zio.ZEnv, Nothing, Int] = {
-    val program = for {
-      diningRoom <- DiningRoom(10)
-      _          <- diningRoom.simulation
-    } yield ()
-
-    program.fold(_ => 1, _ => 0)
+    simulation(10).fold(_ => 1, _ => 0)
   }
 }
