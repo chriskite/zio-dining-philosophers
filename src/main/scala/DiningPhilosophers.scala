@@ -8,14 +8,23 @@ case class Chopstick(id: Long, sem: Semaphore, philosopherId: Ref[Option[Long]])
 class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick, timesAte: Ref[Long]) {
   import Philosopher._
 
+  /**
+    * Acquire the semaphore for the chopstick, use it with function `fn`, then release it.
+    * @param chopstick
+    * @param fn
+    * @tparam R
+    * @tparam E
+    * @tparam A
+    * @return [[Some[A]] if the semaphore was acquired, [[None]] if acquisition timed out
+    */
   private def withChopstick[R, E, A](chopstick: Chopstick)(
-      f: => ZIO[R, E, A]): ZIO[Console with R with Clock, E, Option[A]] =
+      fn: => ZIO[R, E, A]): ZIO[Console with R with Clock, E, Option[A]] =
     chopstick.sem
       .withPermit {
         for {
           _ <- putStrLn(s"Philosopher $id picked up chopstick ${chopstick.id}")
           _ <- chopstick.philosopherId.set(Some(id))
-          r <- f
+          r <- fn
           _ <- chopstick.philosopherId.set(None)
           _ <- putStrLn(s"Philosopher $id put down chopstick ${chopstick.id}")
         } yield r
@@ -26,6 +35,16 @@ class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick,
         case _    => ZIO.unit
       }
 
+  /**
+    * Acquire the semaphores of both chopsticks, choosing which to acquire first using the id of the [[Philosopher]]
+    * in order to avoid deadlock. Uses the semaphore with function `fn`.
+    * @param chopsticks
+    * @param f
+    * @tparam R
+    * @tparam E
+    * @tparam A
+    * @return [[Some[A]] if both semaphores were acquired, [[None]] if either acquisition timed out
+    */
   private def withChopsticks[R, E, A](chopsticks: (Chopstick, Chopstick))(
       f: => ZIO[R, E, A]): ZIO[Console with R with Clock, E, Option[A]] =
     (if (0 == id % 2) {
@@ -34,6 +53,10 @@ class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick,
        withChopstick(chopsticks._2)(withChopstick(chopsticks._1)(f))
      }).map(_.flatten)
 
+  /**
+    * Pick up the left and right chopstick, spend time eating, then put them down.
+    * @return [[Some]] if the chopsticks' semaphores were acquired, [[None]] if either acquisition timed out
+    */
   private def eat: URIO[Console with Clock, Option[Unit]] =
     withChopsticks(leftChopstick, rightChopstick) {
       for {
@@ -44,6 +67,9 @@ class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick,
       } yield ()
     }
 
+  /**
+    * Sleep this fiber to simulate thinking
+    */
   private def think: URIO[Console with Clock, Unit] =
     for {
       _ <- putStrLn(s"Philosopher $id thinking")
@@ -51,6 +77,9 @@ class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick,
       _ <- putStrLn(s"Philosopher $id finished thinking")
     } yield ()
 
+  /**
+    * Alternate between eating and thinking, forever.
+    */
   def dine: URIO[Console with Clock, Nothing] =
     (eat *> think).forever.onInterrupt {
       for {
@@ -67,6 +96,11 @@ object Philosopher {
 }
 
 object DiningPhilosophers extends zio.App {
+
+  /**
+    * Simulate a round table of [[Philosopher]]s eating with chopsticks and thinking.
+    * @param numPhilosophers number of [[Philosopher]]s to simulate
+    */
   def simulation(numPhilosophers: Int): ZIO[Console with Clock, Unit, Unit] =
     for {
       philosophers <- makePhilosophers(numPhilosophers)
@@ -74,6 +108,11 @@ object DiningPhilosophers extends zio.App {
       _            <- fiber.join
     } yield ()
 
+  /**
+    * Make the [[Philosopher]]s and their [[Chopstick]]s
+    * @param numPhilosophers number of [[Philosopher]]s to make
+    * @return the [[List]] of [[Philosopher]]s
+    */
   def makePhilosophers(numPhilosophers: Int): IO[Unit, List[Philosopher]] = {
     def circularIterator[A](s: Seq[A]) = Iterator.continually(s).flatten
     if (numPhilosophers <= 0) {
