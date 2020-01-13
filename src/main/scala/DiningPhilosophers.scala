@@ -1,13 +1,15 @@
-import zio.console.putStrLn
+import zio.clock.Clock
+import zio.console.{Console, putStrLn}
 import zio.duration._
-import zio.{Ref, Semaphore, ZIO}
+import zio.{IO, Ref, Semaphore, URIO, ZIO}
 
 case class Chopstick(id: Long, sem: Semaphore, philosopherId: Ref[Option[Long]])
 
 class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick, timesAte: Ref[Long]) {
   import Philosopher._
 
-  private def withChopstick[R, E, A](chopstick: Chopstick)(f: => ZIO[R, E, A]) =
+  private def withChopstick[R, E, A](chopstick: Chopstick)(
+      f: => ZIO[R, E, A]): ZIO[Console with R with Clock, E, Option[A]] =
     chopstick.sem
       .withPermit {
         for {
@@ -24,15 +26,15 @@ class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick,
         case _    => ZIO.unit
       }
 
-  private def withChopsticks[R, E, A](chopsticks: (Chopstick, Chopstick))(f: => ZIO[R, E, A]) = {
-    if (0 == id % 2) {
-      withChopstick(chopsticks._1)(withChopstick(chopsticks._2)(f))
-    } else {
-      withChopstick(chopsticks._2)(withChopstick(chopsticks._1)(f))
-    }
-  }
+  private def withChopsticks[R, E, A](chopsticks: (Chopstick, Chopstick))(
+      f: => ZIO[R, E, A]): ZIO[Console with R with Clock, E, Option[A]] =
+    (if (0 == id % 2) {
+       withChopstick(chopsticks._1)(withChopstick(chopsticks._2)(f))
+     } else {
+       withChopstick(chopsticks._2)(withChopstick(chopsticks._1)(f))
+     }).map(_.flatten)
 
-  private def eat = {
+  private def eat: URIO[Console with Clock, Option[Unit]] =
     withChopsticks(leftChopstick, rightChopstick) {
       for {
         _ <- putStrLn(s"Philosopher $id eating")
@@ -41,16 +43,15 @@ class Philosopher(id: Long, leftChopstick: Chopstick, rightChopstick: Chopstick,
         _ <- putStrLn(s"Philosopher $id finished eating")
       } yield ()
     }
-  }
 
-  private def think =
+  private def think: URIO[Console with Clock, Unit] =
     for {
       _ <- putStrLn(s"Philosopher $id thinking")
       _ <- ZIO.sleep(ThinkTime)
       _ <- putStrLn(s"Philosopher $id finished thinking")
     } yield ()
 
-  def dine =
+  def dine: URIO[Console with Clock, Nothing] =
     (eat *> think).forever.onInterrupt {
       for {
         ate <- timesAte.get
@@ -66,14 +67,14 @@ object Philosopher {
 }
 
 object DiningPhilosophers extends zio.App {
-  def simulation(numPhilosophers: Int) =
+  def simulation(numPhilosophers: Int): ZIO[Console with Clock, Unit, Unit] =
     for {
       philosophers <- makePhilosophers(numPhilosophers)
       fiber        <- ZIO.forkAll(philosophers.map(_.dine))
       _            <- fiber.join
     } yield ()
 
-  def makePhilosophers(numPhilosophers: Int) = {
+  def makePhilosophers(numPhilosophers: Int): IO[Unit, List[Philosopher]] = {
     def circularIterator[A](s: Seq[A]) = Iterator.continually(s).flatten
     if (numPhilosophers <= 0) {
       ZIO.dieMessage("numPhilosophers must be > 0")
@@ -95,8 +96,8 @@ object DiningPhilosophers extends zio.App {
           circularIterator(chopsticks).take(numPhilosophers + 1).sliding(2).toList.zipWithIndex.map {
             case (stickList, index) =>
               for {
-                stickTuple <- ZIO.fromOption(stickList.headOption zip stickList.lastOption)
-                timesAte   <- Ref.make[Long](0)
+                stickTuple <- ZIO.fromOption(stickList.headOption.zip(stickList.lastOption))
+                timesAte   <- Ref.make(0L)
               } yield new Philosopher(index, stickTuple._1, stickTuple._2, timesAte)
           }
         }
