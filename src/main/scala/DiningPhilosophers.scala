@@ -1,7 +1,7 @@
 import zio.clock.Clock
 import zio.console.{Console, putStrLn}
 import zio.duration._
-import zio.{IO, Ref, Semaphore, URIO, ZIO}
+import zio.{IO, Ref, Semaphore, UIO, URIO, ZIO}
 
 case class Chopstick(id: Long, sem: Semaphore, philosopherId: Ref[Option[Long]])
 
@@ -93,6 +93,10 @@ object Philosopher {
   val EatTime     = 2.seconds
   val ThinkTime   = 3.seconds
   val WaitTimeout = EatTime * 2
+
+  def make(index: Long, leftStick: Chopstick, rightStick: Chopstick): UIO[Philosopher] = for {
+    timesAte <- Ref.make(0L)
+  } yield new Philosopher(index, leftStick, rightStick, timesAte)
 }
 
 object DiningPhilosophers extends zio.App {
@@ -114,14 +118,13 @@ object DiningPhilosophers extends zio.App {
     * @return the [[List]] of [[Philosopher]]s
     */
   def makePhilosophers(numPhilosophers: Int): IO[Unit, List[Philosopher]] = {
-    def circularIterator[A](s: Seq[A]) = Iterator.continually(s).flatten
     if (numPhilosophers <= 0) {
       ZIO.dieMessage("numPhilosophers must be > 0")
     } else {
       for {
         chopsticks <- ZIO.traverse(0 to numPhilosophers - 1) { i =>
           for {
-            sem              <- Semaphore.make(1)
+            sem <- Semaphore.make(1)
             philosopherIdRef <- Ref.make[Option[Long]](None)
           } yield Chopstick(i, sem, philosopherIdRef)
         }
@@ -132,12 +135,10 @@ object DiningPhilosophers extends zio.App {
             * Since the table is round, the first philosopher's left chopstick is the last philosopher's
             * right chopstick.
             */
-          circularIterator(chopsticks).take(numPhilosophers + 1).sliding(2).toList.zipWithIndex.map {
-            case (stickList, index) =>
-              for {
-                stickTuple <- ZIO.fromOption(stickList.headOption.zip(stickList.lastOption))
-                timesAte   <- Ref.make(0L)
-              } yield new Philosopher(index, stickTuple._1, stickTuple._2, timesAte)
+          val tableSticks = chopsticks :+ chopsticks(0)
+          tableSticks.zip(tableSticks.drop(1)).zipWithIndex.map {
+            case ((leftStick, rightStick), index) =>
+              Philosopher.make(index, leftStick, rightStick)
           }
         }
       } yield philosophers
