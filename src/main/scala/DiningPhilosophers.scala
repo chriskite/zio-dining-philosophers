@@ -1,7 +1,7 @@
 import zio.clock.Clock
 import zio.console.{Console, putStrLn}
 import zio.duration._
-import zio.{IO, Ref, Semaphore, UIO, URIO, ZIO}
+import zio.{ExitCode, IO, Ref, Semaphore, UIO, URIO, ZIO}
 
 case class Chopstick(id: Long, sem: Semaphore, philosopherId: Ref[Option[Long]])
 
@@ -94,9 +94,10 @@ object Philosopher {
   val ThinkTime   = 3.seconds
   val WaitTimeout = EatTime * 2
 
-  def make(index: Long, leftStick: Chopstick, rightStick: Chopstick): UIO[Philosopher] = for {
-    timesAte <- Ref.make(0L)
-  } yield new Philosopher(index, leftStick, rightStick, timesAte)
+  def make(index: Long, leftStick: Chopstick, rightStick: Chopstick): UIO[Philosopher] =
+    for {
+      timesAte <- Ref.make(0L)
+    } yield new Philosopher(index, leftStick, rightStick, timesAte)
 }
 
 object DiningPhilosophers extends zio.App {
@@ -122,13 +123,13 @@ object DiningPhilosophers extends zio.App {
       ZIO.dieMessage("numPhilosophers must be > 0")
     } else {
       for {
-        chopsticks <- ZIO.traverse(0 to numPhilosophers - 1) { i =>
+        chopsticks <- ZIO.foreach((0 to numPhilosophers - 1).toList) { i =>
           for {
-            sem <- Semaphore.make(1)
+            sem              <- Semaphore.make(1)
             philosopherIdRef <- Ref.make[Option[Long]](None)
           } yield Chopstick(i, sem, philosopherIdRef)
         }
-        philosophers <- ZIO.sequence {
+        philosophers <- ZIO.collectAll {
 
           /**
             * Set out a chopstick on both sides of each philosopher seated around a circular table.
@@ -145,7 +146,6 @@ object DiningPhilosophers extends zio.App {
     }
   }
 
-  def run(args: List[String]): ZIO[zio.ZEnv, Nothing, Int] = {
-    simulation(10).fold(_ => 1, _ => 0)
-  }
+  override def run(args: List[String]): URIO[zio.ZEnv, ExitCode] =
+    simulation(10).fold(_ => ExitCode.failure, _ => ExitCode.success)
 }
